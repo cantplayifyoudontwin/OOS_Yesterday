@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-FMCSA Failed Inspection Lead Generator (v2 — corrected)
----------------------------------------------------------
-Pulls daily inspection data from the DOT/FMCSA Open Data Portal (Socrata API),
-filters for out-of-service (OOS) violations, cross-references with the Company
-Census to find carriers with 20+ power units, and outputs a clean CSV.
+FMCSA Failed Inspection Lead Generator (v3)
+--------------------------------------------
+Pulls daily inspection data from the DOT/FMCSA Open Data Portal,
+filters for out-of-service (OOS) violations, and enriches with carrier
+details from the FMCSA QCMobile API to filter by fleet size.
  
-Data sources (all free, no auth required for basic use):
-  - Vehicle Inspection File:          data.transportation.gov :: fx4q-ay7w
-  - Company Census File:              data.transportation.gov :: 4a2k-zf79
+Data sources:
+  - Vehicle Inspection File: data.transportation.gov :: fx4q-ay7w  (Socrata, free, no auth)
+  - Carrier details:         mobile.fmcsa.dot.gov QCMobile API     (free, requires webkey)
  
 Usage:
   python fetch_inspections.py                 # defaults to yesterday
@@ -32,14 +32,14 @@ except ImportError:
     sys.exit(1)
  
 # ---------------------------------------------------------------------------
-# Socrata dataset IDs on data.transportation.gov
+# Config
 # ---------------------------------------------------------------------------
-BASE_URL           = "https://data.transportation.gov/resource"
-INSPECTION_DATASET = "fx4q-ay7w"   # Vehicle Inspection File
-CENSUS_DATASET     = "4a2k-zf79"   # Motor Carrier Registrations — Census
+SOCRATA_BASE     = "https://data.transportation.gov/resource"
+INSPECTION_DS    = "fx4q-ay7w"
+QCMOBILE_BASE    = "https://mobile.fmcsa.dot.gov/qc/services/carriers"
  
-PAGE_SIZE       = 50000
-MIN_POWER_UNITS = 20
+PAGE_SIZE        = 50000
+MIN_POWER_UNITS  = 20
  
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT  = SCRIPT_DIR.parent
@@ -48,22 +48,17 @@ META_FILE  = OUTPUT_DIR / "meta.json"
  
  
 # ---------------------------------------------------------------------------
-# Helpers
+# Socrata helpers
 # ---------------------------------------------------------------------------
 def socrata_get(dataset_id, params, app_token=None):
-    """Query a Socrata dataset with pagination."""
-    url = f"{BASE_URL}/{dataset_id}.json"
-    headers = {}
-    if app_token:
-        headers["X-App-Token"] = app_token
- 
-    all_rows = []
-    offset = 0
+    url = f"{SOCRATA_BASE}/{dataset_id}.json"
+    headers = {"X-App-Token": app_token} if app_token else {}
+    all_rows, offset = [], 0
     while True:
         p = {**params, "$limit": PAGE_SIZE, "$offset": offset}
         resp = requests.get(url, params=p, headers=headers, timeout=120)
         if resp.status_code != 200:
-            print(f"  ⚠  API returned {resp.status_code}: {resp.text[:300]}")
+            print(f"  ⚠  Socrata {resp.status_code}: {resp.text[:200]}")
             resp.raise_for_status()
         rows = resp.json()
         if not rows:
@@ -76,6 +71,58 @@ def socrata_get(dataset_id, params, app_token=None):
     return all_rows
  
  
+# ---------------------------------------------------------------------------
+# FMCSA QCMobile API helpers
+# ---------------------------------------------------------------------------
+def qcmobile_get_carrier(dot_number, webkey):
+    """Look up a single carrier by DOT number. Returns dict or None."""
+    url = f"{QCMOBILE_BASE}/{dot_number}?webKey={webkey}"
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Response wraps carrier in a "content" key with a list
+            if "content" in data and isinstance(data["content"], list) and data["content"]:
+                carrier = data["content"][0].get("carrier", {})
+                return carrier
+            elif "carrier" in data:
+                return data["carrier"]
+            return data
+        else:
+            return None
+    except Exception:
+        return None
+ 
+ 
+def batch_carrier_lookup(dot_numbers, webkey):
+    """
+    Look up multiple carriers via QCMobile API.
+    Returns dict: dot_number_str -> carrier_record
+    """
+    results = {}
+    total = len(dot_numbers)
+    print(f"  Looking up {total:,} carriers via FMCSA QCMobile API...")
+    print(f"  (This may take a few minutes for large batches)")
+ 
+    for i, dot in enumerate(dot_numbers):
+        carrier = qcmobile_get_carrier(dot, webkey)
+        if carrier:
+            results[str(dot)] = carrier
+ 
+        # Progress update every 200
+        if (i + 1) % 200 == 0:
+            print(f"    ... {i+1:,}/{total:,} looked up ({len(results):,} found)")
+ 
+        # Rate limit: ~5 per second to be safe
+        time.sleep(0.2)
+ 
+    print(f"  → {len(results):,} carrier records retrieved")
+    return results
+ 
+ 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def safe_int(val, default=0):
     try:
         return int(float(val))
@@ -83,133 +130,31 @@ def safe_int(val, default=0):
         return default
  
  
-def discover_columns(dataset_id, app_token=None):
-    """Fetch 1 row to discover available column names."""
-    rows = socrata_get(dataset_id, {"$limit": 1}, app_token)
-    if rows:
-        return sorted(rows[0].keys())
-    return []
- 
- 
-def date_to_insp_format(iso_date):
-    """Convert YYYY-MM-DD  ->  YYYYMMDD  (the format INSP_DATE uses)."""
-    return iso_date.replace("-", "")
+def get_field(record, key, default=""):
+    val = record.get(key, default)
+    return str(val).strip() if val else default
  
  
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Pipeline
 # ---------------------------------------------------------------------------
 def fetch_oos_inspections(date_from, date_to, app_token=None):
-    """
-    Pull inspections that have OOS violations.
-    Uses change_date for the daily window (this is a proper timestamp field).
-    Falls back to insp_date text matching if change_date doesn't work.
-    """
-    # Try change_date first (proper timestamp, works with ISO dates)
     where = (
         f"change_date >= '{date_from}T00:00:00.000' "
         f"AND change_date <= '{date_to}T23:59:59.999' "
         f"AND oos_total > '0'"
     )
-    print(f"  Fetching OOS inspections (change_date {date_from} to {date_to})...")
-    try:
-        rows = socrata_get(INSPECTION_DATASET, {"$where": where}, app_token)
-        print(f"  → {len(rows):,} OOS inspection records found")
-        if rows:
-            return rows
-    except Exception as e:
-        print(f"  ⚠  change_date query failed: {e}")
-        print(f"  Trying fallback with insp_date...")
- 
-    # Fallback: use insp_date (text field in YYYYMMDD format)
-    d_from = date_to_insp_format(date_from)
-    d_to   = date_to_insp_format(date_to)
-    where = (
-        f"insp_date >= '{d_from}' "
-        f"AND insp_date <= '{d_to}' "
-        f"AND oos_total > '0'"
-    )
-    try:
-        rows = socrata_get(INSPECTION_DATASET, {"$where": where}, app_token)
-        print(f"  → {len(rows):,} OOS inspection records found (via insp_date)")
-        return rows
-    except Exception as e:
-        print(f"  ⚠  insp_date query also failed: {e}")
- 
-        # Last resort: discover columns and print them for debugging
-        print("  Discovering available columns for debugging...")
-        cols = discover_columns(INSPECTION_DATASET, app_token)
-        print(f"  Available columns: {cols}")
-        return []
+    print(f"  Fetching OOS inspections ({date_from} to {date_to})...")
+    rows = socrata_get(INSPECTION_DS, {"$where": where}, app_token)
+    print(f"  → {len(rows):,} OOS inspection records found")
+    return rows
  
  
-def fetch_census_for_dots(dot_numbers, app_token=None):
-    """Look up census data for a list of DOT numbers. Returns dict dot->record."""
-    print(f"  Looking up census data for {len(dot_numbers):,} carriers...")
-    census = {}
- 
-    # The census DOT number column may be 'dot_number' or 'usdot_number'
-    # We'll try 'dot_number' first since that's the common Socrata field name
-    dot_col = "dot_number"
- 
-    batch_size = 80  # keep URL length reasonable
-    for i in range(0, len(dot_numbers), batch_size):
-        batch = dot_numbers[i:i + batch_size]
-        dot_list = " OR ".join(f"{dot_col}='{d}'" for d in batch)
-        where = f"({dot_list})"
-        try:
-            rows = socrata_get(CENSUS_DATASET, {"$where": where}, app_token)
-            for row in rows:
-                dot = row.get("dot_number", row.get("usdot_number", ""))
-                if dot:
-                    census[str(dot)] = row
-        except Exception as e:
-            # If dot_number fails, try usdot_number
-            if i == 0 and "dot_number" in str(e):
-                dot_col = "usdot_number"
-                dot_list = " OR ".join(f"{dot_col}='{d}'" for d in batch)
-                where = f"({dot_list})"
-                rows = socrata_get(CENSUS_DATASET, {"$where": where}, app_token)
-                for row in rows:
-                    dot = row.get("usdot_number", row.get("dot_number", ""))
-                    if dot:
-                        census[str(dot)] = row
-            else:
-                print(f"  ⚠  Census batch error: {e}")
-        time.sleep(0.3)
- 
-    print(f"  → {len(census):,} census records retrieved")
-    return census
- 
- 
-def find_power_units(record):
-    """Try multiple possible column names for power units count."""
-    for key in ["nbr_power_unit", "tot_pwr_units", "total_power_units",
-                "nbr_pwr_unit", "power_units", "total_pwr_units"]:
-        if key in record:
-            return safe_int(record[key])
-    # If nothing found, check all keys for anything with 'pwr' or 'power'
-    for key, val in record.items():
-        if "pwr" in key.lower() or "power" in key.lower():
-            return safe_int(val)
-    return 0
- 
- 
-def find_field(record, candidates, default=""):
-    """Return the first matching field from a list of candidate column names."""
-    for c in candidates:
-        if c in record and record[c]:
-            return str(record[c]).strip()
-    return default
- 
- 
-def build_lead_list(date_from, date_to, app_token=None):
-    """Full pipeline: inspections with OOS → census filter → lead list."""
- 
+def build_lead_list(date_from, date_to, app_token=None, fmcsa_webkey=None):
     # Step 1: Get inspections with OOS violations
     inspections = fetch_oos_inspections(date_from, date_to, app_token)
     if not inspections:
-        print("  No OOS inspections found for this date range.")
+        print("  No OOS inspections found.")
         return []
  
     # Collect unique DOT numbers
@@ -218,92 +163,82 @@ def build_lead_list(date_from, date_to, app_token=None):
         dot = str(insp.get("dot_number", "")).strip()
         if dot and dot != "0":
             dot_set.add(dot)
- 
     print(f"  {len(dot_set):,} unique carriers had OOS violations")
  
-    # Step 2: Census lookup for fleet size + contact info
-    census = fetch_census_for_dots(list(dot_set), app_token)
+    # Step 2: Carrier lookup
+    carrier_data = {}
+    use_fleet_filter = False
  
-    # If census lookup completely failed, still output what we have from inspections
-    if not census:
-        print("  ⚠  Census lookup returned no data — outputting inspection data only")
-        # Still produce leads using inspection-embedded carrier info
-        leads = []
-        for insp in inspections:
-            dot = str(insp.get("dot_number", "")).strip()
-            leads.append({
-                "dot_number":          dot,
-                "legal_name":          find_field(insp, ["insp_carrier_name", "carrier_name"]),
-                "phone":               "",
-                "email":               "",
-                "physical_address":    find_field(insp, ["insp_carrier_street"]),
-                "physical_city":       find_field(insp, ["insp_carrier_city"]),
-                "physical_state":      find_field(insp, ["insp_carrier_state"]),
-                "physical_zip":        find_field(insp, ["insp_carrier_zip_code"]),
-                "power_units":         "unknown",
-                "drivers":             "unknown",
-                "inspection_date":     find_field(insp, ["insp_date"]),
-                "oos_total":           safe_int(insp.get("oos_total", 0)),
-                "vehicle_oos":         safe_int(insp.get("vehicle_oos_total", 0)),
-                "driver_oos":          safe_int(insp.get("driver_oos_total", 0)),
-                "inspection_state":    find_field(insp, ["report_state"]),
-                "inspection_level":    find_field(insp, ["insp_level_id", "level"]),
-                "safer_link":          f"https://safer.fmcsa.dot.gov/query.asp?searchtype=ANY&query_type=queryCarrierSnap&query_param=USDOT&query_string={dot}",
-            })
-        print(f"  ✓ {len(leads):,} leads generated (census data unavailable — no fleet size filter applied)")
-        return leads
+    if fmcsa_webkey:
+        use_fleet_filter = True
+        carrier_data = batch_carrier_lookup(list(dot_set), fmcsa_webkey)
+        if not carrier_data:
+            print("  ⚠  QCMobile API returned no data. Outputting without fleet filter.")
+            use_fleet_filter = False
+    else:
+        print("  ℹ  No FMCSA_WEBKEY set — skipping fleet size filter.")
+        print("     All OOS inspections will be included. Set FMCSA_WEBKEY to filter by power units.")
  
-    # Step 3: Build filtered lead list
+    # Step 3: Build leads
     leads = []
+    skipped_small = 0
+ 
     for insp in inspections:
         dot = str(insp.get("dot_number", "")).strip()
-        company = census.get(dot, {})
- 
-        power_units = find_power_units(company)
-        if power_units < MIN_POWER_UNITS:
+        if not dot or dot == "0":
             continue
  
-        leads.append({
-            "dot_number":          dot,
-            "legal_name":          find_field(company, ["legal_name", "name"]),
-            "dba_name":            find_field(company, ["dba_name", "dba"]),
-            "phone":               find_field(company, ["telephone", "phone", "phone_number"]),
-            "email":               find_field(company, ["email_address", "email"]),
-            "physical_address":    find_field(company, ["phy_street", "physical_address"]),
-            "physical_city":       find_field(company, ["phy_city", "physical_city"]),
-            "physical_state":      find_field(company, ["phy_state", "physical_state"]),
-            "physical_zip":        find_field(company, ["phy_zip", "physical_zip"]),
-            "mailing_address":     find_field(company, ["m_street", "mailing_address"]),
-            "mailing_city":        find_field(company, ["m_city", "mailing_city"]),
-            "mailing_state":       find_field(company, ["m_state", "mailing_state"]),
-            "mailing_zip":         find_field(company, ["m_zip", "mailing_zip"]),
-            "power_units":         power_units,
-            "drivers":             safe_int(find_field(company, ["drivers", "nbr_drivers", "total_drivers"], "0")),
-            "carrier_operation":   find_field(company, ["carrier_operation", "carrop"]),
-            "inspection_date":     find_field(insp, ["insp_date"]),
-            "oos_total":           safe_int(insp.get("oos_total", 0)),
-            "vehicle_oos":         safe_int(insp.get("vehicle_oos_total", 0)),
-            "driver_oos":          safe_int(insp.get("driver_oos_total", 0)),
-            "total_violations":    safe_int(insp.get("viol_total", 0)),
-            "inspection_state":    find_field(insp, ["report_state"]),
-            "inspection_level":    find_field(insp, ["insp_level_id", "level"]),
-            "safer_link":          f"https://safer.fmcsa.dot.gov/query.asp?searchtype=ANY&query_type=queryCarrierSnap&query_param=USDOT&query_string={dot}",
-        })
+        carrier = carrier_data.get(dot, {})
  
-    print(f"  ✓ {len(leads):,} leads generated (carriers with {MIN_POWER_UNITS}+ power units & OOS violations)")
+        # Fleet size filter (only if we have carrier data)
+        if use_fleet_filter:
+            power_units = safe_int(carrier.get("totalPowerUnits", 0))
+            if power_units < MIN_POWER_UNITS:
+                skipped_small += 1
+                continue
+        else:
+            power_units = safe_int(carrier.get("totalPowerUnits", ""))
+ 
+        # Use QCMobile data if available, fall back to inspection-embedded data
+        lead = {
+            "dot_number":       dot,
+            "legal_name":       get_field(carrier, "legalName") or get_field(insp, "insp_carrier_name"),
+            "dba_name":         get_field(carrier, "dbaName"),
+            "phone":            get_field(carrier, "phyPhone") or get_field(carrier, "telephone"),
+            "email":            get_field(carrier, "email"),
+            "physical_address": get_field(carrier, "phyStreet") or get_field(insp, "insp_carrier_street"),
+            "physical_city":    get_field(carrier, "phyCity") or get_field(insp, "insp_carrier_city"),
+            "physical_state":   get_field(carrier, "phyState") or get_field(insp, "insp_carrier_state"),
+            "physical_zip":     get_field(carrier, "phyZipcode") or get_field(insp, "insp_carrier_zip_code"),
+            "power_units":      power_units if power_units else "",
+            "drivers":          safe_int(carrier.get("totalDrivers", "")) or "",
+            "inspection_date":  get_field(insp, "insp_date"),
+            "oos_total":        safe_int(insp.get("oos_total", 0)),
+            "vehicle_oos":      safe_int(insp.get("vehicle_oos_total", 0)),
+            "driver_oos":       safe_int(insp.get("driver_oos_total", 0)),
+            "total_violations": safe_int(insp.get("viol_total", 0)),
+            "inspection_state": get_field(insp, "report_state"),
+            "inspection_level": get_field(insp, "insp_level_id"),
+            "safer_link":       f"https://safer.fmcsa.dot.gov/query.asp?searchtype=ANY&query_type=queryCarrierSnap&query_param=USDOT&query_string={dot}",
+        }
+        leads.append(lead)
+ 
+    if use_fleet_filter:
+        print(f"  Skipped {skipped_small:,} inspections (carriers with < {MIN_POWER_UNITS} power units)")
+ 
+    print(f"  ✓ {len(leads):,} leads generated")
     return leads
  
  
 def write_csv(leads, date_from, date_to):
-    """Write leads to CSV and update metadata JSON."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
  
     filename = f"fmcsa_leads_{date_from}.csv" if date_from == date_to else f"fmcsa_leads_{date_from}_to_{date_to}.csv"
     filepath = OUTPUT_DIR / filename
  
     if not leads:
-        print(f"\n  No leads to write for {date_from}.")
-        filepath.write_text("No carriers with 20+ power units had OOS violations on this date.\n")
+        filepath.write_text("No OOS violations found on this date.\n")
+        print(f"\n  No leads to write.")
     else:
         fieldnames = list(leads[0].keys())
         with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -312,16 +247,15 @@ def write_csv(leads, date_from, date_to):
             writer.writerows(leads)
         print(f"\n  ✓ CSV written: {filepath} ({len(leads)} rows)")
  
-    # Write latest copy
+    # Latest copy
     latest_path = OUTPUT_DIR / "latest.csv"
     if leads:
-        fieldnames = list(leads[0].keys())
         with open(latest_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=list(leads[0].keys()))
             writer.writeheader()
             writer.writerows(leads)
  
-    # Update metadata
+    # Metadata
     meta = {
         "last_updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         "date_from":    date_from,
@@ -344,52 +278,39 @@ def write_csv(leads, date_from, date_to):
         "lead_count": len(leads),
         "generated":  meta["last_updated"],
     })
-    history = history[:30]
-    meta["history"] = history
+    meta["history"] = history[:30]
     META_FILE.write_text(json.dumps(meta, indent=2))
-    print(f"  ✓ Metadata updated: {META_FILE}")
+    print(f"  ✓ Metadata updated")
  
  
 def main():
-    parser = argparse.ArgumentParser(description="FMCSA Failed Inspection Lead Generator")
+    parser = argparse.ArgumentParser(description="FMCSA OOS Lead Generator v3")
     parser.add_argument("--date", help="Specific date (YYYY-MM-DD). Default: yesterday.")
     parser.add_argument("--days-back", type=int, default=1, help="Days back (default 1)")
     parser.add_argument("--app-token", default=None, help="Socrata app token")
-    parser.add_argument("--debug-columns", action="store_true",
-                        help="Print available column names and exit (for troubleshooting)")
+    parser.add_argument("--fmcsa-webkey", default=None, help="FMCSA QCMobile API webkey")
     args = parser.parse_args()
  
-    app_token = args.app_token or os.environ.get("SOCRATA_APP_TOKEN")
- 
-    # Debug mode: just print column names
-    if args.debug_columns:
-        print("Inspection file columns:")
-        cols = discover_columns(INSPECTION_DATASET, app_token)
-        for c in cols:
-            print(f"  {c}")
-        print("\nCensus file columns:")
-        cols = discover_columns(CENSUS_DATASET, app_token)
-        for c in cols:
-            print(f"  {c}")
-        return
+    app_token    = args.app_token or os.environ.get("SOCRATA_APP_TOKEN")
+    fmcsa_webkey = args.fmcsa_webkey or os.environ.get("FMCSA_WEBKEY")
  
     if args.date:
-        date_from = args.date
-        date_to   = args.date
+        date_from = date_to = args.date
     else:
         today     = datetime.utcnow().date()
         date_to   = (today - timedelta(days=1)).isoformat()
         date_from = (today - timedelta(days=args.days_back)).isoformat()
  
     print("=" * 60)
-    print("  FMCSA Failed Inspection Lead Generator v2")
+    print("  FMCSA OOS Lead Generator v3")
     print("=" * 60)
-    print(f"  Date range: {date_from} → {date_to}")
-    print(f"  Min power units: {MIN_POWER_UNITS}")
-    print(f"  App token: {'set' if app_token else 'not set (may be throttled)'}")
+    print(f"  Date range:   {date_from} → {date_to}")
+    print(f"  Min power:    {MIN_POWER_UNITS}")
+    print(f"  Socrata token: {'yes' if app_token else 'no'}")
+    print(f"  FMCSA webkey:  {'yes → will filter by fleet size' if fmcsa_webkey else 'no → all OOS inspections included'}")
     print("-" * 60)
  
-    leads = build_lead_list(date_from, date_to, app_token)
+    leads = build_lead_list(date_from, date_to, app_token, fmcsa_webkey)
     write_csv(leads, date_from, date_to)
  
     print("\n" + "=" * 60)
