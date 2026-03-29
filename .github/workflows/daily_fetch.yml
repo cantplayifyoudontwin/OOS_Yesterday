@@ -1,0 +1,61 @@
+name: Daily FMCSA Lead Fetch
+
+on:
+  # Runs every day at 5:00 PM UTC (12:00 PM EST / 1:00 PM EDT)
+  # FMCSA data typically available by 12:00 PM EST
+  schedule:
+    - cron: "0 17 * * *"
+
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Specific date to fetch (YYYY-MM-DD), leave blank for yesterday"
+        required: false
+      days_back:
+        description: "Number of days back to fetch (default 1)"
+        required: false
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-leads:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run FMCSA fetch script
+        env:
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            python scripts/fetch_inspections.py --date "${{ github.event.inputs.date }}"
+          else
+            python scripts/fetch_inspections.py --days-back ${{ github.event.inputs.days_back || '1' }}
+          fi
+
+      - name: Commit and push results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No new data to commit."
+          else
+            DATE=$(date -u +"%Y-%m-%d")
+            git commit -m "Daily FMCSA lead data — ${DATE}"
+            git push
+          fi
