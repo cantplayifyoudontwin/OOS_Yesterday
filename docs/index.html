@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FMCSA Fleet Inspection Leads</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:        #0B0E11;
+      --surface:   #131820;
+      --surface-2: #1A2230;
+      --border:    #232D3B;
+      --border-hi: #2E3C4F;
+      --text:      #E8ECF1;
+      --text-dim:  #8896A7;
+      --accent:    #F59E0B;
+      --accent-hi: #FBBF24;
+      --danger:    #EF4444;
+      --success:   #22C55E;
+      --radius:    10px;
+    }
+
+    html { font-size: 16px; }
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---- Grain overlay for texture ---- */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    /* ---- Top accent bar ---- */
+    .top-bar {
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--danger), var(--accent));
+      background-size: 200% 100%;
+      animation: shimmer 4s ease-in-out infinite;
+    }
+    @keyframes shimmer {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+
+    /* ---- Header ---- */
+    header {
+      padding: 3rem 0 2rem;
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 5px 14px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 1.25rem;
+    }
+    .badge .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    h1 {
+      font-size: clamp(1.75rem, 4vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      margin-bottom: 0.75rem;
+    }
+    h1 span { color: var(--accent); }
+    header p {
+      color: var(--text-dim);
+      max-width: 540px;
+      margin: 0 auto;
+      font-size: 1.05rem;
+    }
+
+    /* ---- Status card ---- */
+    .status-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      margin: 2rem 0;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    .status-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .status-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+    }
+    .status-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+    .status-value.highlight {
+      color: var(--accent-hi);
+      font-size: 1.5rem;
+    }
+
+    /* ---- Download section ---- */
+    .download-section {
+      text-align: center;
+      padding: 2.5rem 0;
+    }
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--accent);
+      color: #000;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      border: none;
+      border-radius: var(--radius);
+      padding: 16px 36px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      letter-spacing: -0.01em;
+    }
+    .download-btn:hover {
+      background: var(--accent-hi);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(245, 158, 11, 0.25);
+    }
+    .download-btn:active { transform: translateY(0); }
+    .download-btn svg { width: 20px; height: 20px; }
+    .download-hint {
+      margin-top: 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    /* ---- History table ---- */
+    .history-section {
+      padding-bottom: 4rem;
+    }
+    .section-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 1rem;
+      padding-left: 2px;
+    }
+    .history-table {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .history-table table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .history-table th {
+      text-align: left;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .history-table td {
+      padding: 12px 20px;
+      font-size: 0.9rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .history-table tr:last-child td { border-bottom: none; }
+    .history-table tr:hover td { background: var(--surface-2); }
+    .history-table .mono {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+    }
+    .history-table a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .history-table a:hover { text-decoration: underline; }
+    .lead-count-cell {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+      color: var(--accent-hi);
+    }
+
+    /* ---- Footer ---- */
+    footer {
+      text-align: center;
+      padding: 2rem 0 3rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      line-height: 1.8;
+    }
+    footer a { color: var(--text-dim); }
+
+    /* ---- Loading state ---- */
+    .loading {
+      text-align: center;
+      padding: 4rem 0;
+      color: var(--text-dim);
+    }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg {
+      text-align: center;
+      padding: 2rem;
+      color: var(--danger);
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: var(--radius);
+    }
+
+    /* ---- Responsive ---- */
+    @media (max-width: 600px) {
+      .status-row { flex-direction: column; align-items: flex-start; }
+      .history-table th:last-child,
+      .history-table td:last-child { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="top-bar"></div>
+
+  <div class="container">
+    <header>
+      <div class="badge"><span class="dot"></span> Updated Daily</div>
+      <h1>FMCSA Fleet Inspection <span>Leads</span></h1>
+      <p>Daily out-of-service inspection data for trucking carriers with 20+ power units. Sourced from the DOT/FMCSA public data portal.</p>
+    </header>
+
+    <div id="app">
+      <div class="loading">
+        <div class="spinner"></div>
+        Loading latest data...
+      </div>
+    </div>
+
+    <footer>
+      Data sourced from <a href="https://data.transportation.gov" target="_blank">data.transportation.gov</a> · FMCSA Open Data Program<br>
+      Inspection data is updated daily from a 24-hour-old database, typically available by 12:00 PM EST.
+    </footer>
+  </div>
+
+  <script>
+    const DATA_BASE = './data';
+
+    async function loadMeta() {
+      try {
+        const resp = await fetch(`${DATA_BASE}/meta.json?_=${Date.now()}`);
+        if (!resp.ok) throw new Error('No data yet');
+        return await resp.json();
+      } catch {
+        return null;
+      }
+    }
+
+    function render(meta) {
+      const app = document.getElementById('app');
+
+      if (!meta) {
+        app.innerHTML = `
+          <div class="error-msg">
+            <strong>No data available yet.</strong><br>
+            The automated pipeline hasn't run yet. Trigger it manually from GitHub Actions<br>
+            or wait for the next scheduled run (daily at 12:00 PM EST).
+          </div>
+          <div class="download-section"></div>
+        `;
+        return;
+      }
+
+      const { last_updated, date_from, date_to, lead_count, latest_file, history = [] } = meta;
+      const dateLabel = date_from === date_to ? date_from : `${date_from} — ${date_to}`;
+
+      let historyHTML = '';
+      if (history.length > 0) {
+        const rows = history.map(h => `
+          <tr>
+            <td class="mono">${h.date}</td>
+            <td class="lead-count-cell">${h.lead_count}</td>
+            <td><a href="${DATA_BASE}/${h.file}" download>${h.file}</a></td>
+            <td class="mono" style="color:var(--text-dim)">${h.generated}</td>
+          </tr>
+        `).join('');
+
+        historyHTML = `
+          <div class="history-section">
+            <div class="section-title">Recent Runs</div>
+            <div class="history-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Leads</th>
+                    <th>File</th>
+                    <th>Generated</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
+      app.innerHTML = `
+        <div class="status-card">
+          <div class="status-row">
+            <div class="status-item">
+              <span class="status-label">Inspection Date</span>
+              <span class="status-value">${dateLabel}</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">Leads Found</span>
+              <span class="status-value highlight">${lead_count}</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">Last Updated</span>
+              <span class="status-value mono" style="font-size:0.9rem">${last_updated}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="download-section">
+          ${lead_count > 0 ? `
+            <a class="download-btn" href="${DATA_BASE}/latest.csv" download>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+              Download Latest CSV
+            </a>
+            <div class="download-hint">
+              ${latest_file} · ${lead_count} lead${lead_count !== 1 ? 's' : ''} · Carriers with 20+ power units & OOS violations
+            </div>
+          ` : `
+            <div class="download-hint" style="font-size:0.95rem">
+              No leads found for this date — no carriers with 20+ power units had OOS violations.
+            </div>
+          `}
+        </div>
+
+        ${historyHTML}
+      `;
+    }
+
+    loadMeta().then(render);
+  </script>
+</body>
+</html>
