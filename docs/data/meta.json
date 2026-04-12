@@ -1,10 +1,16 @@
 {
-  "last_updated": "2026-04-11 17:33 UTC",
-  "date_from": "2026-04-10",
-  "date_to": "2026-04-10",
+  "last_updated": "2026-04-12 17:37 UTC",
+  "date_from": "2026-04-11",
+  "date_to": "2026-04-11",
   "lead_count": 0,
-  "latest_file": "fmcsa_leads_2026-04-10.csv",
+  "latest_file": "fmcsa_leads_2026-04-11.csv",
   "history": [
+    {
+      "date": "2026-04-11",
+      "file": "fmcsa_leads_2026-04-11.csv",
+      "lead_count": 0,
+      "generated": "2026-04-12 17:37 UTC"
+    },
     {
       "date": "2026-04-10",
       "file": "fmcsa_leads_2026-04-10.csv",
