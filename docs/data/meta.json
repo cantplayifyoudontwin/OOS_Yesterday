@@ -1,10 +1,16 @@
 {
-  "last_updated": "2026-06-27 18:05 UTC",
-  "date_from": "2026-06-26",
-  "date_to": "2026-06-26",
+  "last_updated": "2026-06-28 18:06 UTC",
+  "date_from": "2026-06-27",
+  "date_to": "2026-06-27",
   "lead_count": 0,
-  "latest_file": "fmcsa_leads_2026-06-26.csv",
+  "latest_file": "fmcsa_leads_2026-06-27.csv",
   "history": [
+    {
+      "date": "2026-06-27",
+      "file": "fmcsa_leads_2026-06-27.csv",
+      "lead_count": 0,
+      "generated": "2026-06-28 18:06 UTC"
+    },
     {
       "date": "2026-06-26",
       "file": "fmcsa_leads_2026-06-26.csv",
@@ -178,12 +184,6 @@
       "file": "fmcsa_leads_2026-05-29.csv",
       "lead_count": 0,
       "generated": "2026-05-30 18:03 UTC"
-    },
-    {
-      "date": "2026-05-28",
-      "file": "fmcsa_leads_2026-05-28.csv",
-      "lead_count": 0,
-      "generated": "2026-05-29 19:31 UTC"
     }
   ]
 }
